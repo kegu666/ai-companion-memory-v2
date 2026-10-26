@@ -3,7 +3,8 @@
 基于 [pinganbbOvO/ai-companion-kit](https://github.com/pinganbbOvO/ai-companion-kit) 的记忆增强试验版，保留上游 MIT 许可。
 新增 **SQLite 完整原文存储、对话压缩、向量与关键词检索、候选记忆确认、事实替代和会话隔离**。
 
-- [使用说明、配置示例、真实模型试聊与限制](docs/MEMORY-V2.md)
+- [中文项目说明：原理、试用步骤与目前边界](docs/项目说明.md)
+- [详细接入文档、配置示例、命令与数据结构](docs/MEMORY-V2.md)
 - 离线演示：`npm run memory:demo`，Windows 可双击 `tools/memory-v2-demo.cmd`。
 - 记忆测试：`npm run memory:test`。
 
