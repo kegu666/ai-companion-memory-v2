@@ -10,6 +10,8 @@
   "scripts": {
     "demo": "node packages/companion/examples/demo.js",
     "check": "node scripts/check.mjs",
+    "memory:test": "node --test packages/companion/test/memory-v2.test.js",
+    "memory:demo": "node packages/companion/examples/memory-v2-demo.js",
     "phone": "node packages/phone-mcp/src/phone-mcp.js",
     "phone:test": "node packages/phone-mcp/src/phone-mcp.js --selftest",
     "qzone": "node packages/qzone/open-zone.mjs",

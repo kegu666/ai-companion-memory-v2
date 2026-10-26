@@ -8,6 +8,11 @@ yarn.lock
 config.json
 role.md
 data/
+data-memory-v2/
+*.db
+*.db-wal
+*.db-shm
+memory-v2-report.json
 *.log
 
 # 截图输出

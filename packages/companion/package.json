@@ -7,6 +7,8 @@
   "exports": {
     ".": "./src/lib.js",
     "./memory": "./src/memory.js",
+    "./memory-v2": "./src/sqlite-memory.js",
+    "./memory-models": "./src/memory-models.js",
     "./role": "./src/role.js",
     "./brain": "./src/brain.js",
     "./humanize": "./src/humanize.js",
@@ -29,7 +31,10 @@
     "check": "node src/index.js --check --config ./config.json",
     "dry": "node src/index.js --dry-run --config ./config.json",
     "diary": "node src/diary.js",
-    "diary:auto": "node src/diary.js auto"
+    "diary:auto": "node src/diary.js auto",
+    "memory": "node src/memory-cli.js",
+    "memory:test": "node --test test/memory-v2.test.js",
+    "memory:demo": "node examples/memory-v2-demo.js"
   },
   "keywords": [
     "qq",

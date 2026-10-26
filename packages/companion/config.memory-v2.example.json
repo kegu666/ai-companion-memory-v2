@@ -1,0 +1,40 @@
+{
+  "apiKeyEnv": "CHAT_API_KEY",
+  "baseUrl": "https://api.deepseek.com/v1",
+  "model": "deepseek-chat",
+  "roleCard": "role.example.md",
+  "roleMaxChars": 12000,
+  "dataDir": "data-memory-v2",
+  "ownerIds": [],
+  "names": ["小鲸鱼"],
+  "onebot": {
+    "wsUrl": "ws://127.0.0.1:3001",
+    "httpUrl": "http://127.0.0.1:3000",
+    "accessToken": ""
+  },
+  "memory": {
+    "backend": "sqlite",
+    "recentTurns": 8,
+    "summaryMinTurns": 20,
+    "summaryTriggerChars": 12000,
+    "summaryInputChars": 18000,
+    "summaryMaxChars": 1800,
+    "contextChars": 10000,
+    "topK": 6,
+    "organizer": {
+      "enabled": true,
+      "baseUrl": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat",
+      "apiKeyEnv": "MEMORY_API_KEY",
+      "timeoutMs": 30000
+    },
+    "embedding": {
+      "enabled": true,
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "bge-m3",
+      "apiKeyEnv": "EMBEDDING_API_KEY",
+      "revision": "1",
+      "timeoutMs": 10000
+    }
+  }
+}

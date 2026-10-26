@@ -37,13 +37,14 @@ export function loadConfig(explicitPath) {
   const rel = (p, def) => (p ? path.resolve(dir, p) : path.join(dir, def));
 
   return {
-    apiKey: cfg.apiKey || process.env.DEEPSEEK_API_KEY || '',
+    apiKey: cfg.apiKey || (cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv] : process.env.DEEPSEEK_API_KEY) || '',
     baseUrl: cfg.baseUrl || 'https://api.deepseek.com/v1',
     model: cfg.model || 'deepseek-chat',
 
     roleCard: rel(cfg.roleCard, 'role.md'),
     roleMaxChars: cfg.roleMaxChars || 12000,
     dataDir: rel(cfg.dataDir, 'data'),
+    memory: cfg.memory || { backend: 'json' },
 
     onebot: {
       wsUrl: cfg.onebot?.wsUrl || 'ws://127.0.0.1:3001',
@@ -82,7 +83,13 @@ async function main() {
   console.log('  干跑      ' + (cfg.dryRun ? '是（不会真发）' : '否'));
   console.log('');
 
-  const memory = new Memory({ dir: cfg.dataDir });
+  let memory;
+  if (cfg.memory.backend === 'sqlite') {
+    const { createMemoryV2 } = await import('./sqlite-memory.js');
+    memory = await createMemoryV2({ dir: cfg.dataDir, config: cfg.memory });
+  } else {
+    memory = new Memory({ dir: cfg.dataDir });
+  }
   const role = new Role({ cardPath: cfg.roleCard, maxChars: cfg.roleMaxChars });
 
   // 角色卡体检
@@ -92,7 +99,7 @@ async function main() {
     lint.warn.forEach((w) => console.log('   · ' + w));
     console.log('');
   }
-  if (process.argv.includes('--check')) { console.log('检查完毕。'); return; }
+  if (process.argv.includes('--check')) { await memory.close?.(); console.log('检查完毕。'); return; }
   if (!cfg.apiKey) console.log('⚠️ 没配 apiKey，模型调用会失败\n');
 
   const brain = new Brain({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model, role, memory });
@@ -147,7 +154,13 @@ async function main() {
   });
 
   process.on('unhandledRejection', (e) => console.error('[未处理] ' + (e?.message || e)));
-  process.on('SIGINT', () => { console.log('\n再见。'); process.exit(0); });
+  const shutdown = async () => {
+    await memory.close?.();
+    console.log('\n再见。');
+    process.exit(0);
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 
   console.log('在跑了。Ctrl+C 退出。\n');
 }
@@ -162,18 +175,33 @@ export async function handleTurn({ bot, brain, human, memory, waker }, items, cf
     ? '你在一个 QQ 群里。下面是群里刚连着说的几句话，最后一条是最新的。'
     : '你在跟 ' + last.name + ' 私聊。';
 
-  const { text: out } = await brain.reply({ key, userId: last.userId, userName: last.name, text, situation });
+  const { text: out, memoryTurnIds } = await brain.reply({
+    key, userId: last.userId, userName: last.name, text, situation,
+    sourceMessages: items, record: !cfg.dryRun,
+  });
   if (!out) { console.log('   （没说话）'); return; }
 
   if (cfg.dryRun) { console.log('   [干跑] 会说：' + out); return; }
 
-  const r = await human.say(out, {
-    setTyping: (on) => bot.setTyping(key, on),
-    send: (m) => bot.send(key, m),
-  });
+  let delivered = true;
+  let r;
+  try {
+    r = await human.say(out, {
+      setTyping: (on) => bot.setTyping(key, on),
+      send: async (m) => {
+        const result = await bot.send(key, m);
+        if (!result?.ok) delivered = false;
+        return result;
+      },
+    });
+  } catch (error) {
+    memory.markDelivery?.(memoryTurnIds, false);
+    throw error;
+  }
+  memory.markDelivery?.(memoryTurnIds, delivered);
   console.log('   发出 ' + r.sent + ' 条：' + r.parts.map((p) => p.slice(0, 18)).join(' | '));
   waker.wake(key);
-  memory.touch(last.userId, { name: last.name });
+  if (typeof memory.context !== 'function') memory.touch(last.userId, { name: last.name });
 }
 
 // 直接跑才启动；被 import 时不启动

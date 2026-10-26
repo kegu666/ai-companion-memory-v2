@@ -45,10 +45,23 @@ export class Brain {
    * @returns {Promise<{text:string, reasoning?:string, raw:any}>}
    */
   async reply(input) {
+    if (typeof this.memory.context !== 'function') return this._reply(input);
+    this._queues ||= new Map();
+    const prior = this._queues.get(input.key) || Promise.resolve();
+    const next = prior.catch(() => {}).then(() => this._reply(input));
+    this._queues.set(input.key, next);
+    try { return await next; }
+    finally { if (this._queues.get(input.key) === next) this._queues.delete(input.key); }
+  }
+
+  async _reply(input) {
     const { key, userId, userName, text, situation = '', history = [], record = true } = input;
 
-    const memLine = this.memory.renderPerson(userId);
-    const recent = this.memory.renderRecent(20, { excludeWhere: key });
+    const hasV2 = typeof this.memory.context === 'function';
+    const memLine = hasV2
+      ? await this.memory.context({ key, userId, text })
+      : this.memory.renderPerson(userId);
+    const recent = hasV2 ? '' : this.memory.renderRecent(20, { excludeWhere: key });
     const sys = this.role.build({
       situation,
       memory: memLine,
@@ -57,30 +70,42 @@ export class Brain {
     });
 
     const messages = [{ role: 'system', content: sys }];
-    for (const h of history.slice(-20)) {
+    for (const h of (hasV2 ? [] : history.slice(-20))) {
       messages.push({ role: h.isSelf ? 'assistant' : 'user', content: String(h.text || '') });
     }
     messages.push({ role: 'user', content: String(text || '') });
 
-    const res = await fetch(this.baseUrl + '/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + this.apiKey },
-      body: JSON.stringify({ model: this.model, messages, temperature: 1.1, stream: false }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    const raw = await res.text();
-    if (!res.ok) throw new Error('模型返回 ' + res.status + '：' + raw.slice(0, 300));
+    const turnIds = hasV2 && record ? this.memory.beginConversation({
+      key, userId, userName, text, sourceMessages: input.sourceMessages,
+    }) : null;
+    try {
+      const res = await fetch(this.baseUrl + '/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + this.apiKey },
+        body: JSON.stringify({ model: this.model, messages, temperature: 1.1, stream: false }),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      const raw = await res.text();
+      if (!res.ok) throw new Error('模型返回 ' + res.status + '：' + raw.slice(0, 300));
 
-    let json;
-    try { json = JSON.parse(raw); } catch { throw new Error('模型返回不是 JSON：' + raw.slice(0, 200)); }
-    const msg = json.choices?.[0]?.message;
-    const out = String(msg?.content || '').trim();
+      let json;
+      try { json = JSON.parse(raw); } catch { throw new Error('模型返回不是 JSON：' + raw.slice(0, 200)); }
+      const msg = json.choices?.[0]?.message;
+      const out = String(msg?.content || '').trim();
 
-    if (record) {
-      this.memory.remember(userId, { name: userName, topic: (text || '').slice(0, 40) + ' → ' + out.slice(0, 40) });
-      this.memory.logTurn({ where: key, who: userName || userId, text, reply: out });
+      if (record) {
+        if (hasV2) {
+          this.memory.completeConversation(turnIds, out);
+        } else {
+          this.memory.remember(userId, { name: userName, topic: (text || '').slice(0, 40) + ' → ' + out.slice(0, 40) });
+          this.memory.logTurn({ where: key, who: userName || userId, text, reply: out });
+        }
+      }
+      return { text: out, reasoning: msg?.reasoning_content, raw: json, memoryTurnIds: turnIds };
+    } catch (error) {
+      if (turnIds) this.memory.failConversation(turnIds);
+      throw error;
     }
-    return { text: out, reasoning: msg?.reasoning_content, raw: json };
   }
 
   /**
