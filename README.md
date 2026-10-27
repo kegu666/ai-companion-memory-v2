@@ -1,3 +1,5 @@
+> **特别感谢 [灵栈](https://lingzhanskill.com/) 中文 AI 技能社区对本项目的支持，并承担本项目测试阶段的全部模型调用费用。**
+
 # AI Companion Memory V2
 
 基于 [pinganbbOvO/ai-companion-kit](https://github.com/pinganbbOvO/ai-companion-kit) 的记忆增强试验版，保留上游 MIT 许可。
