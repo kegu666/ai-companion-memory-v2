@@ -12,7 +12,7 @@ if (configAt < 0 || !args[configAt + 1]) throw new Error('需要 --config <confi
 const cfg = loadConfig(args[configAt + 1]);
 if (!cfg.apiKey && !/localhost|127\.0\.0\.1/.test(cfg.baseUrl)) throw new Error('请配置对话模型 API Key 环境变量');
 const scope = 'private:trial', userId = 'trial';
-const memory = await createMemoryV2({ dir: cfg.dataDir, config: cfg.memory });
+const memory = await createMemoryV2({ dir: cfg.dataDir, config: { ...cfg.memory, ownerIds: [...(cfg.memory.ownerIds || []), userId] } });
 const brain = new Brain({ apiKey: cfg.apiKey, baseUrl: cfg.baseUrl, model: cfg.model,
   memory, role: new Role({ cardPath: cfg.roleCard, maxChars: cfg.roleMaxChars }) });
 const terminal = createInterface({ input: stdin, output: stdout });

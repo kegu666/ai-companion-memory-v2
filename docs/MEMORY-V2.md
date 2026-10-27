@@ -122,7 +122,9 @@ Memory V3 会在 `memories` 上补充 `kind` 以外的记忆标签：`temperatur
 `importance`、`confidence`、`last_reinforced`、`expires_at` 和 `decay_half_life`。
 时间衰退只改变检索排序，不删除 `turns` 原文；用户再次提到或管理员执行 `reinforce` 时会强化记忆。
 同时保留平台来源元数据：接入层写入 `platform`、`scope`、`visibility` 和 `source`，整理模型只提议
-`subject`/`context` 语义标签及其 raw 值；检索会先按当前平台和会话范围过滤，未知平台可以保留原名。
+`subject`/`experience`/`context` 语义标签及其 raw 值。平台是 AI 经历发生的地点，不是天然记忆边界：
+标为 `ai_self + ai_experience` 的内容可回到主对话；主人资料和群聊内容仍按可见性限制。
+可信平台适配器可调用 `recordExperience()` 写入 AI 自己的游戏、视频或其他活动经历；这些经历不会因为来源平台不同而和主对话分开。
 
 turns 不按 400 轮截断。每条原文完整保存，摘要和检索内容只是提示词里的有限视图。
 数据落盘为明文。更换机器备份时先停止程序，再复制整个数据目录；

@@ -8,7 +8,7 @@
 - [Memory V3 动工文档：记忆分类、强化与衰退](docs/MEMORY-V3-动工文档.md)
 
 当前已实现 V3 的第一轮标签和衰退机制：记忆会记录类型、冷热、重要度、可信度和强化时间，
-时间衰退只影响检索排序，不删除完整聊天原文。
+平台只记录经历来源；AI 自己的跨平台经历可以共享，主人资料仍按私聊/群聊边界控制。可信平台适配器可通过 `recordExperience()` 记录 AI 的真实活动。
 - 离线演示：`npm run memory:demo`，Windows 可双击 `tools/memory-v2-demo.cmd`。
 - 记忆测试：`npm run memory:test`。
 

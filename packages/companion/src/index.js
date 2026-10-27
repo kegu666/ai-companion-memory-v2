@@ -44,7 +44,7 @@ export function loadConfig(explicitPath) {
     roleCard: rel(cfg.roleCard, 'role.md'),
     roleMaxChars: cfg.roleMaxChars || 12000,
     dataDir: rel(cfg.dataDir, 'data'),
-    memory: cfg.memory || { backend: 'json' },
+    memory: { ...(cfg.memory || { backend: 'json' }), ownerIds: (cfg.ownerIds || []).map(String) },
 
     onebot: {
       wsUrl: cfg.onebot?.wsUrl || 'ws://127.0.0.1:3001',

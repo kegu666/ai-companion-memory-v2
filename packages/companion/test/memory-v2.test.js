@@ -149,12 +149,12 @@ test('计划过期后显示 expired 标签，仍保留记录和来源', async (t
   assert.equal(m.db.prepare('SELECT status,temperature FROM memories WHERE id=?').get(id).status, 'active');
 });
 
-test('平台来源由系统写入，AI 标签保留原始语义且跨平台默认隔离', async (t) => {
-  const m = await fixture(t, { options: { recentTurns: 1, platform: 'qq' }, organizer: {
+test('平台来源由系统写入，AI 自身经历可跨平台共享但主人资料仍受限', async (t) => {
+  const m = await fixture(t, { options: { recentTurns: 1, platform: 'qq', ownerIds: ['10001'] }, organizer: {
     async organize({ turns }) {
       return { summary: '游戏内容只属于游戏场景', memories: [{
-        kind: 'event', content: '游戏角色建了一座城', subject: 'game_character', context: 'game',
-        labels: { subject: 'game_character', subjectRaw: '游戏角色', context: 'game', contextRaw: '游戏中建城' },
+        kind: 'event', content: 'AI 在游戏里建了一座城', subject: 'ai_self', context: 'game',
+        labels: { subject: 'ai_self', experience: 'ai_experience', subjectRaw: 'AI 自己', context: 'game', contextRaw: '游戏中建城' },
         sourceIds: [turns[0].id], quote: turns[0].text,
       }] };
     },
@@ -169,12 +169,28 @@ test('平台来源由系统写入，AI 标签保留原始语义且跨平台默�
   assert.equal(candidate.metadata.provenance.sourceType, 'game_event');
   assert.equal(candidate.metadata.labels.contextRaw, '游戏中建城');
   m.approve(candidate.id);
-  assert.equal((await m.search('游戏角色', priv)).length, 0);
+  assert.equal((await m.search('游戏', priv))[0].id, candidate.id);
+  const privateFact = m.addMemory({ ...priv, kind: 'fact', content: '主人住在深圳', status: 'active',
+    labels: { subject: 'user', experience: 'user_fact' } });
+  assert.equal((await m.search('深圳', { scope: 'group:555', userId: '10001' })).length, 0);
   await m.close();
   const gameMemory = new SqliteMemory({ dir: m.dir, dbPath: path.join(m.dir, 'memory.db'),
     organizer: null, embedder: null, options: { platform: 'minecraft' } });
-  try { assert.equal((await gameMemory.search('游戏角色', priv))[0].id, candidate.id); }
+  try {
+    assert.equal((await gameMemory.search('游戏', priv))[0].id, candidate.id);
+    assert.equal(privateFact > 0, true);
+  }
   finally { await gameMemory.close(); }
+});
+
+test('AI 活动入口把游戏经历写入统一生命记忆，主人私聊可召回，群聊不可见', async (t) => {
+  const m = await fixture(t, { options: { ownerIds: ['10001'], platform: 'qq' }, embedder: null });
+  const id = m.recordExperience({ platform: 'minecraft', eventId: 'build-1', content: '我在游戏里建了一座城',
+    source: { type: 'game_event', id: 'build-1' } });
+  assert.equal(m.list({ scope: 'experience:minecraft', userId: 'ai_self', status: 'active' })[0].id, id);
+  assert.equal((await m.search('游戏', { scope: 'private:10001', userId: '10001' }))[0].id, id);
+  assert.equal((await m.search('游戏', { scope: 'group:555', userId: '10001' })).length, 0);
+  assert.equal(m.db.prepare('SELECT count(*) AS n FROM activity_events WHERE event_id=?').get('build-1').n, 1);
 });
 
 test('整理失败不会推进摘要水位；恢复后继续，不重复覆盖或删除原文', async (t) => {

@@ -29,7 +29,23 @@ const parseJsonObject = (value) => {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
   } catch { return {}; }
 };
-const visibilityForScope = (scope) => String(scope).startsWith('private:') ? 'private' : 'scope_public';
+const visibilityForScope = (scope) => String(scope).startsWith('private:') ? 'private'
+  : String(scope).startsWith('experience:') ? 'owner_private' : 'scope_public';
+const normalizeLabels = (value = {}) => {
+  const result = {};
+  for (const key of ['subject', 'experience', 'context', 'subjectRaw', 'contextRaw']) {
+    if (typeof value?.[key] === 'string' && value[key].trim()) result[key] = value[key].trim().slice(0, key.endsWith('Raw') ? 240 : 80);
+  }
+  return result;
+};
+const isVisibleAcrossConversations = (row, { scope, userId, ownerIds }) => {
+  if (!String(scope).startsWith('private:') || !ownerIds.includes(String(userId))) return false;
+  const metadata = parseJsonObject(row.metadata);
+  const labels = normalizeLabels(metadata.labels);
+  if (!['ai_self', 'ai'].includes(labels.subject) && !['ai_experience', 'shared_experience'].includes(labels.experience)) return false;
+  const provenance = metadata.provenance || {};
+  return provenance.visibility !== 'group_public' && String(row.scope).startsWith('experience:');
+};
 const clip = (v, n) => Array.from(String(v ?? '')).slice(0, n).join('');
 const tokens = (text) => {
   const words = String(text).toLowerCase().match(/[a-z0-9_]+|[\p{Script=Han}]+/gu) || [];
@@ -37,10 +53,11 @@ const tokens = (text) => {
     ? [s] : Array.from(s).slice(0, -1).map((c, i) => c + Array.from(s)[i + 1])))].slice(0, 128);
 };
 function scopeCheck(scope, userId) {
-  if (!/^(private|group):[^:\s]+$/.test(String(scope))) throw new Error('scope 必须为 private:用户 或 group:群');
+  if (!/^(private|group|experience):[^:\s]+$/.test(String(scope))) throw new Error('无效会话范围');
   if (String(scope).startsWith('private:') && String(scope).slice(8) !== String(userId)) {
     throw new Error('不允许读取或写入其他用户的私聊');
   }
+  if (String(scope).startsWith('experience:') && userId !== 'ai_self') throw new Error('经历范围仅供本地适配器管理');
 }
 function cosine(a, b) {
   if (a.length !== b.length) return 0;
@@ -59,8 +76,11 @@ export class SqliteMemory {
       summaryInputChars: 18000, summaryMaxChars: 1800, contextChars: 10000, topK: 6,
       ranking: 'decay',
       platform: 'qq',
+      ownerIds: [],
       ...options,
     };
+    if (!Array.isArray(this.options.ownerIds)) throw new Error('ownerIds 必须是数组');
+    this.options.ownerIds = this.options.ownerIds.map(String);
     for (const key of ['recentTurns', 'summaryTriggerChars', 'summaryMinTurns', 'summaryInputChars',
       'summaryMaxChars', 'contextChars', 'topK']) {
       if (!Number.isInteger(this.options[key]) || this.options[key] < 1) throw new Error('无效选项：' + key);
@@ -96,7 +116,7 @@ export class SqliteMemory {
   _migrateMemorySchema() {
     const version = this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema');
     const legacyV1 = String(version?.value || '') === '1';
-    if (version && !['1', '2'].includes(String(version.value))) { this.db.close(); throw new Error('不兼容的记忆库版本'); }
+    if (version && !['1', '2', '3'].includes(String(version.value))) { this.db.close(); throw new Error('不兼容的记忆库版本'); }
     const columns = new Set(this.db.prepare('PRAGMA table_info(memories)').all().map((row) => row.name));
     const additions = [
       ['temperature', "TEXT NOT NULL DEFAULT 'warm'"],
@@ -126,7 +146,8 @@ export class SqliteMemory {
           update.run(defaults.temperature, defaults.importance, defaults.confidence, defaults.halfLife, row.id);
         }
       }
-      this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('schema', '2');
+      this.db.exec('CREATE TABLE IF NOT EXISTS activity_events (platform TEXT NOT NULL, event_id TEXT NOT NULL, turn_id INTEGER, memory_id INTEGER NOT NULL, PRIMARY KEY(platform,event_id));');
+      this.db.prepare('INSERT OR REPLACE INTO meta VALUES (?,?)').run('schema', '3');
       this.db.prepare('INSERT OR IGNORE INTO meta VALUES (?,?)').run('memory_decay_started_at', String(now));
     });
   }
@@ -210,6 +231,18 @@ export class SqliteMemory {
   }
   addMemory(memory) {
     const id = this._insertMemory(memory);
+    this.schedule();
+    return id;
+  }
+  recordExperience({ platform, eventId, content, kind = 'event', labels = {}, source = {}, ...fields } = {}) {
+    if (!platform || !content) throw new Error('经历需要 platform 和 content');
+    const sourceId = eventId || source.id;
+    const scope = 'experience:' + String(platform);
+    const metadata = { labels: normalizeLabels({ subject: 'ai_self', experience: 'ai_experience', ...labels }),
+      provenance: { platform: String(platform), scope, visibility: 'owner_private', sourceType: source.type || 'activity', sourceRef: sourceId || null } };
+    const id = this._insertMemory({ ...fields, scope, userId: 'ai_self', kind, content, status: 'active', origin: 'activity', metadata });
+    if (sourceId) this.db.prepare('INSERT OR IGNORE INTO activity_events(platform,event_id,turn_id,memory_id) VALUES (?,?,?,?)')
+      .run(String(platform), String(sourceId), 0, id);
     this.schedule();
     return id;
   }
@@ -331,17 +364,18 @@ export class SqliteMemory {
     scopeCheck(scope, userId);
     const rows = this.db.prepare('SELECT m.*,v.vector FROM memories m LEFT JOIN vectors v ON v.memory_id=m.id AND v.model_key=? WHERE m.scope=? AND m.status=? AND (?=0 OR m.user_id=?)')
       .all(this.embedder?.key || '', scope, 'active', scope.startsWith('private:') ? 1 : 0, String(userId));
-    const visibleRows = rows.filter((row) => {
-      const metadata = parseJsonObject(row.metadata);
-      const provenance = metadata.provenance || {};
-      return !provenance.platform || provenance.platform === this.options.platform;
-    });
+    const globalRows = this.db.prepare('SELECT m.*,v.vector FROM memories m LEFT JOIN vectors v ON v.memory_id=m.id AND v.model_key=? WHERE m.status=?')
+      .all(this.embedder?.key || '', 'active');
+    const visibleRows = [...new Map([...rows, ...globalRows].map((row) => [row.id, row])).values()]
+      .filter((row) => row.scope === scope || isVisibleAcrossConversations(row, {
+        scope, userId, ownerIds: this.options.ownerIds,
+      }));
     const queryTokens = tokens(query);
     const matched = new Set();
     if (queryTokens.length) {
       const match = queryTokens.slice(0, 32).map((s) => '"' + s.replace(/"/g, '""') + '"').join(' OR ');
-      for (const r of this.db.prepare('SELECT memory_fts.rowid FROM memory_fts JOIN memories m ON m.id=memory_fts.rowid WHERE memory_fts MATCH ? AND m.scope=? AND m.status=? AND (?=0 OR m.user_id=?)')
-        .all(match, scope, 'active', scope.startsWith('private:') ? 1 : 0, String(userId))) matched.add(r.rowid);
+      for (const r of this.db.prepare('SELECT memory_fts.rowid FROM memory_fts JOIN memories m ON m.id=memory_fts.rowid WHERE memory_fts MATCH ? AND m.status=?')
+        .all(match, 'active')) matched.add(r.rowid);
     }
     let vector = null;
     if (this.embedder && visibleRows.some((r) => r.vector)) {
