@@ -121,6 +121,8 @@ SQLite 初始化及首次旧数据导入仍会发生。
 Memory V3 会在 `memories` 上补充 `kind` 以外的记忆标签：`temperature`（hot/warm/cold/expired）、
 `importance`、`confidence`、`last_reinforced`、`expires_at` 和 `decay_half_life`。
 时间衰退只改变检索排序，不删除 `turns` 原文；用户再次提到或管理员执行 `reinforce` 时会强化记忆。
+同时保留平台来源元数据：接入层写入 `platform`、`scope`、`visibility` 和 `source`，整理模型只提议
+`subject`/`context` 语义标签及其 raw 值；检索会先按当前平台和会话范围过滤，未知平台可以保留原名。
 
 turns 不按 400 轮截断。每条原文完整保存，摘要和检索内容只是提示词里的有限视图。
 数据落盘为明文。更换机器备份时先停止程序，再复制整个数据目录；

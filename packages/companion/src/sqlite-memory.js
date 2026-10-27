@@ -22,6 +22,14 @@ const parseExpiry = (value) => {
   const time = typeof value === 'number' ? value : Date.parse(String(value));
   return Number.isFinite(time) && time > 0 ? Math.trunc(time) : null;
 };
+const parseJsonObject = (value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+};
+const visibilityForScope = (scope) => String(scope).startsWith('private:') ? 'private' : 'scope_public';
 const clip = (v, n) => Array.from(String(v ?? '')).slice(0, n).join('');
 const tokens = (text) => {
   const words = String(text).toLowerCase().match(/[a-z0-9_]+|[\p{Script=Han}]+/gu) || [];
@@ -50,6 +58,7 @@ export class SqliteMemory {
       recentTurns: 8, summaryTriggerChars: 12000, summaryMinTurns: 20,
       summaryInputChars: 18000, summaryMaxChars: 1800, contextChars: 10000, topK: 6,
       ranking: 'decay',
+      platform: 'qq',
       ...options,
     };
     for (const key of ['recentTurns', 'summaryTriggerChars', 'summaryMinTurns', 'summaryInputChars',
@@ -101,7 +110,9 @@ export class SqliteMemory {
       ['last_accessed', 'INTEGER NOT NULL DEFAULT 0'],
       ['metadata', "TEXT NOT NULL DEFAULT '{}'"],
     ];
+    const turnColumns = new Set(this.db.prepare('PRAGMA table_info(turns)').all().map((row) => row.name));
     this.transaction(() => {
+      if (!turnColumns.has('metadata')) this.db.exec("ALTER TABLE turns ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
       for (const [name, definition] of additions) {
         if (!columns.has(name)) this.db.exec('ALTER TABLE memories ADD COLUMN ' + name + ' ' + definition);
       }
@@ -151,7 +162,7 @@ export class SqliteMemory {
     this.schedule();
     return this.person(id);
   }
-  _insertMemory({ scope, userId, kind, slot = '', content, status = 'candidate', sourceIds = [], quote = '', origin = 'model', temperature, importance, confidence, expiresAt, decayHalfLife, metadata = {} }) {
+  _insertMemory({ scope, userId, kind, slot = '', content, status = 'candidate', sourceIds = [], quote = '', origin = 'model', temperature, importance, confidence, expiresAt, decayHalfLife, metadata = {}, provenance = {}, labels = {} }) {
     scopeCheck(scope, userId);
     if (!KINDS.has(kind) || !['active', 'candidate'].includes(status) ||
         typeof content !== 'string' || !content.trim() || content.length > 2000 ||
@@ -163,8 +174,18 @@ export class SqliteMemory {
     const nextConfidence = clamp01(confidence, defaults.confidence);
     const nextExpiry = parseExpiry(expiresAt);
     const nextHalfLife = Number.isFinite(Number(decayHalfLife)) && Number(decayHalfLife) > 0 ? Number(decayHalfLife) : defaults.halfLife;
+    const suppliedMetadata = metadata && typeof metadata === 'object' ? metadata : {};
+    const suppliedLabels = { ...(suppliedMetadata.labels || {}), ...(labels && typeof labels === 'object' ? labels : {}) };
+    const suppliedProvenance = { ...(suppliedMetadata.provenance || {}), ...(provenance && typeof provenance === 'object' ? provenance : {}) };
     let nextMetadata = '{}';
-    try { nextMetadata = JSON.stringify(metadata && typeof metadata === 'object' ? metadata : {}); } catch { nextMetadata = '{}'; }
+    try {
+      nextMetadata = JSON.stringify({ ...suppliedMetadata,
+        labels: { ...(suppliedMetadata.labels || {}), ...suppliedLabels },
+        provenance: { platform: this.options.platform, scope, visibility: visibilityForScope(scope),
+          confidenceSource: origin === 'explicit-api' ? 'explicit_user' : 'model_inferred',
+          ...suppliedProvenance, sourceIds },
+      });
+    } catch { nextMetadata = '{}'; }
     const now = Date.now();
     const existing = this.db.prepare('SELECT id,status FROM memories WHERE scope=? AND user_id=? AND kind=? AND content=? AND status IN (\'active\',\'candidate\') ORDER BY id DESC LIMIT 1')
       .get(scope, String(userId), kind, content.trim());
@@ -196,7 +217,7 @@ export class SqliteMemory {
     scopeCheck(scope, userId);
     return this.db.prepare('SELECT * FROM memories WHERE scope=? AND (?=0 OR user_id=?) AND (?=\'\' OR status=?) ORDER BY id')
       .all(scope, scope.startsWith('private:') ? 1 : 0, String(userId), status || '', status || '')
-      .map((r) => ({ ...r, sourceIds: JSON.parse(r.source_ids) }));
+      .map((r) => ({ ...r, sourceIds: JSON.parse(r.source_ids), metadata: parseJsonObject(r.metadata) }));
   }
   approve(id) {
     return this.transaction(() => {
@@ -230,11 +251,14 @@ export class SqliteMemory {
       .run(Date.now(), Date.now(), clamp01(importance, row.importance), nextTemperature, id);
     return id;
   }
-  logTurn({ where, who, text, reply, userId, t } = {}) {
+  logTurn({ where, who, text, reply, userId, t, metadata = {} } = {}) {
     const id = userId || (String(where).startsWith('private:') ? String(where).slice(8) : '');
     scopeCheck(where, id);
-    const result = this.db.prepare('INSERT INTO turns(scope,user_id,who,text,reply,delivery,created_at) VALUES (?,?,?,?,?,?,?)')
-      .run(where, String(id), String(who || id), String(text || ''), String(reply || ''), reply ? 'recorded' : 'pending', Number(t) || Date.now());
+    const safeMetadata = metadata && typeof metadata === 'object' ? metadata : {};
+    const normalizedMetadata = { platform: this.options.platform, scope: where,
+      visibility: safeMetadata.visibility || visibilityForScope(where), ...safeMetadata };
+    const result = this.db.prepare('INSERT INTO turns(scope,user_id,who,text,reply,delivery,created_at,metadata) VALUES (?,?,?,?,?,?,?,?)')
+      .run(where, String(id), String(who || id), String(text || ''), String(reply || ''), reply ? 'recorded' : 'pending', Number(t) || Date.now(), JSON.stringify(normalizedMetadata));
     this.db.prepare('INSERT OR IGNORE INTO work_queue(scope) VALUES (?)').run(where);
     this.schedule();
     return Number(result.lastInsertRowid);
@@ -249,7 +273,8 @@ export class SqliteMemory {
       if (sourceMessages?.length) {
         sourceMessages.forEach((m) => {
           this._touch(String(m.userId), m.name);
-          ids.push(this.logTurn({ where: key, userId: m.userId, who: m.name, text: m.text, t: m.time }));
+          ids.push(this.logTurn({ where: key, userId: m.userId, who: m.name, text: m.text, t: m.time,
+            metadata: { ...(m.metadata || {}), platform: m.platform || this.options.platform, source: m.source } }));
         });
       } else {
         this._touch(String(userId), userName);
@@ -275,7 +300,8 @@ export class SqliteMemory {
     if (!scope || excludeWhere) return [];
     scopeCheck(scope, userId);
     return this.db.prepare('SELECT *, scope AS "where", created_at AS t FROM turns WHERE scope=? AND created_at>=? ORDER BY id DESC LIMIT ?')
-      .all(scope, sinceMs ? Date.now() - sinceMs : 0, n).reverse();
+      .all(scope, sinceMs ? Date.now() - sinceMs : 0, n).reverse()
+      .map((r) => ({ ...r, metadata: parseJsonObject(r.metadata) }));
   }
   renderPerson(id, { scope = 'private:' + id } = {}) {
     scopeCheck(scope, id);
@@ -291,7 +317,7 @@ export class SqliteMemory {
   sourceTurns(ids, { scope, userId }) {
     scopeCheck(scope, userId);
     const query = this.db.prepare('SELECT * FROM turns WHERE id=? AND scope=?');
-    return ids.map((id) => query.get(id, scope)).filter(Boolean);
+    return ids.map((id) => query.get(id, scope)).filter(Boolean).map((r) => ({ ...r, metadata: parseJsonObject(r.metadata) }));
   }
   stats() {
     const count = (table) => this.db.prepare('SELECT count(*) AS n FROM ' + table).get().n;
@@ -305,6 +331,11 @@ export class SqliteMemory {
     scopeCheck(scope, userId);
     const rows = this.db.prepare('SELECT m.*,v.vector FROM memories m LEFT JOIN vectors v ON v.memory_id=m.id AND v.model_key=? WHERE m.scope=? AND m.status=? AND (?=0 OR m.user_id=?)')
       .all(this.embedder?.key || '', scope, 'active', scope.startsWith('private:') ? 1 : 0, String(userId));
+    const visibleRows = rows.filter((row) => {
+      const metadata = parseJsonObject(row.metadata);
+      const provenance = metadata.provenance || {};
+      return !provenance.platform || provenance.platform === this.options.platform;
+    });
     const queryTokens = tokens(query);
     const matched = new Set();
     if (queryTokens.length) {
@@ -313,12 +344,12 @@ export class SqliteMemory {
         .all(match, scope, 'active', scope.startsWith('private:') ? 1 : 0, String(userId))) matched.add(r.rowid);
     }
     let vector = null;
-    if (this.embedder && rows.some((r) => r.vector)) {
+    if (this.embedder && visibleRows.some((r) => r.vector)) {
       try { vector = validateVector(await this.embedder.embed(query)); }
       catch { this._warn('查询向量不可用，使用关键词检索'); }
     }
     const now = Date.now();
-    const results = rows.map((r) => {
+    const results = visibleRows.map((r) => {
       const terms = new Set(tokens(r.content));
       const lexical = queryTokens.filter((t) => terms.has(t)).length / Math.max(1, queryTokens.length);
       let semantic = 0;
@@ -353,7 +384,7 @@ export class SqliteMemory {
     const hits = await this.search(text, { scope: key, userId });
     const excerpt = (s) => s.length <= 500 ? s : s.slice(0, 240) + '…[完整原文在数据库]…' + s.slice(-240);
     const view = (r) => ({ id: r.id, userId: r.user_id, name: r.who, text: excerpt(r.text),
-      reply: excerpt(r.reply), replyStatus: r.delivery });
+      reply: excerpt(r.reply), replyStatus: r.delivery, metadata: r.metadata });
     const blocks = [
       ['当前人物与已确认记忆', this.renderPerson(userId, { scope: key })],
       ['近期原始对话', recent.map(view)],
@@ -440,7 +471,8 @@ export class SqliteMemory {
       if (chunk.length && chars + t.text.length + t.reply.length > this.options.summaryInputChars) break;
       const room = Math.max(100, this.options.summaryInputChars - chars);
       const item = { id: t.id, userId: t.user_id, name: t.who, time: t.created_at,
-        text: t.text.slice(0, Math.floor(room / 2)), reply: t.reply.slice(0, Math.floor(room / 2)), replyStatus: t.delivery };
+        text: t.text.slice(0, Math.floor(room / 2)), reply: t.reply.slice(0, Math.floor(room / 2)), replyStatus: t.delivery,
+        metadata: parseJsonObject(t.metadata) };
       item.truncated = item.text.length < t.text.length || item.reply.length < t.reply.length;
       chunk.push(item); chars += item.text.length + item.reply.length;
       if (chars >= this.options.summaryInputChars) break;
@@ -459,7 +491,22 @@ export class SqliteMemory {
             !sources[0].userId || !sources.some((t) => t.text.includes(m.quote))) continue;
         if (!KINDS.has(m.kind) || typeof m.content !== 'string' || !m.content.trim() ||
             m.content.length > 2000 || (m.slot && (typeof m.slot !== 'string' || m.slot.length > 128))) continue;
-        this._insertMemory({ ...m, scope, userId: sources[0].userId, status: 'candidate', origin: 'model' });
+        const sourceMetadata = parseJsonObject(sources[0].metadata);
+        const sourceProvenance = {
+          platform: sourceMetadata.platform || this.options.platform,
+          scope,
+          visibility: sourceMetadata.visibility || visibilityForScope(scope),
+          sourceType: sourceMetadata.source?.type || 'conversation',
+          sourceRef: sourceMetadata.source?.id || null,
+        };
+        const labels = m.labels || {
+          subject: m.subject,
+          subjectRaw: m.subjectRaw,
+          context: m.context,
+          contextRaw: m.contextRaw,
+        };
+        this._insertMemory({ ...m, scope, userId: sources[0].userId, status: 'candidate', origin: 'model',
+          metadata: { labels: labels || {}, provenance: sourceProvenance } });
       }
       const first = previous?.first_id || chunk[0].id, last = chunk.at(-1).id, now = Date.now();
       this.db.prepare('INSERT OR REPLACE INTO summaries VALUES (?,?,?,?,?)').run(scope, result.summary, last, first, now);

@@ -14,6 +14,7 @@
   },
   "memory": {
     "backend": "sqlite",
+    "platform": "qq",
     "recentTurns": 8,
     "summaryMinTurns": 20,
     "summaryTriggerChars": 12000,

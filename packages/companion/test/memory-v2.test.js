@@ -149,6 +149,34 @@ test('计划过期后显示 expired 标签，仍保留记录和来源', async (t
   assert.equal(m.db.prepare('SELECT status,temperature FROM memories WHERE id=?').get(id).status, 'active');
 });
 
+test('平台来源由系统写入，AI 标签保留原始语义且跨平台默认隔离', async (t) => {
+  const m = await fixture(t, { options: { recentTurns: 1, platform: 'qq' }, organizer: {
+    async organize({ turns }) {
+      return { summary: '游戏内容只属于游戏场景', memories: [{
+        kind: 'event', content: '游戏角色建了一座城', subject: 'game_character', context: 'game',
+        labels: { subject: 'game_character', subjectRaw: '游戏角色', context: 'game', contextRaw: '游戏中建城' },
+        sourceIds: [turns[0].id], quote: turns[0].text,
+      }] };
+    },
+  } });
+  add(m, '我在游戏里建了一座城', { metadata: { platform: 'minecraft', source: { type: 'game_event', id: 'event-1' } } });
+  add(m, '普通聊天');
+  await m.flush({ force: true });
+  const candidate = m.list({ ...priv, status: 'candidate' })[0];
+  assert.equal(candidate.metadata.provenance.platform, 'minecraft');
+  assert.equal(candidate.metadata.provenance.scope, priv.scope);
+  assert.equal(candidate.metadata.provenance.visibility, 'private');
+  assert.equal(candidate.metadata.provenance.sourceType, 'game_event');
+  assert.equal(candidate.metadata.labels.contextRaw, '游戏中建城');
+  m.approve(candidate.id);
+  assert.equal((await m.search('游戏角色', priv)).length, 0);
+  await m.close();
+  const gameMemory = new SqliteMemory({ dir: m.dir, dbPath: path.join(m.dir, 'memory.db'),
+    organizer: null, embedder: null, options: { platform: 'minecraft' } });
+  try { assert.equal((await gameMemory.search('游戏角色', priv))[0].id, candidate.id); }
+  finally { await gameMemory.close(); }
+});
+
 test('整理失败不会推进摘要水位；恢复后继续，不重复覆盖或删除原文', async (t) => {
   const m = await fixture(t, { organizer: { organize: async () => { throw new Error('offline'); } }, options: { recentTurns: 1 } });
   add(m, '我喜欢咖啡'); add(m, '新消息');
