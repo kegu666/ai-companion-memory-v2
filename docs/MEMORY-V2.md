@@ -118,6 +118,10 @@ SQLite 初始化及首次旧数据导入仍会发生。
 | memory_fts | 英文单词、中文双字片段的 FTS5 索引 |
 | work_queue | 持久化整理队列、失败次数、下次重试时间 |
 
+Memory V3 会在 `memories` 上补充 `kind` 以外的记忆标签：`temperature`（hot/warm/cold/expired）、
+`importance`、`confidence`、`last_reinforced`、`expires_at` 和 `decay_half_life`。
+时间衰退只改变检索排序，不删除 `turns` 原文；用户再次提到或管理员执行 `reinforce` 时会强化记忆。
+
 turns 不按 400 轮截断。每条原文完整保存，摘要和检索内容只是提示词里的有限视图。
 数据落盘为明文。更换机器备份时先停止程序，再复制整个数据目录；
 运行时只复制 memory.db 而漏掉 WAL 可能漏掉最近写入。
@@ -150,6 +154,7 @@ QQ 用户没有自动获得 /approve 管理能力。确认通过本机终端或�
 node packages/companion/src/memory-cli.js --config packages/companion/config.json stats
 node packages/companion/src/memory-cli.js --config packages/companion/config.json list private:10001 10001 candidate
 node packages/companion/src/memory-cli.js --config packages/companion/config.json approve 3
+node packages/companion/src/memory-cli.js --config packages/companion/config.json reinforce 3 0.9 warm
 node packages/companion/src/memory-cli.js --config packages/companion/config.json source private:10001 10001 1 2
 ~~~
 

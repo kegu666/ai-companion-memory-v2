@@ -6,6 +6,9 @@
 - [中文项目说明：原理、试用步骤与目前边界](docs/项目说明.md)
 - [详细接入文档、配置示例、命令与数据结构](docs/MEMORY-V2.md)
 - [Memory V3 动工文档：记忆分类、强化与衰退](docs/MEMORY-V3-动工文档.md)
+
+当前已实现 V3 的第一轮标签和衰退机制：记忆会记录类型、冷热、重要度、可信度和强化时间，
+时间衰退只影响检索排序，不删除完整聊天原文。
 - 离线演示：`npm run memory:demo`，Windows 可双击 `tools/memory-v2-demo.cmd`。
 - 记忆测试：`npm run memory:test`。
 

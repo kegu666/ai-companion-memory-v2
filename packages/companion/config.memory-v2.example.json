@@ -21,6 +21,7 @@
     "summaryMaxChars": 1800,
     "contextChars": 10000,
     "topK": 6,
+    "ranking": "decay",
     "organizer": {
       "enabled": true,
       "baseUrl": "https://api.deepseek.com/v1",

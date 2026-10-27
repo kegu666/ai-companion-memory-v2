@@ -121,6 +121,34 @@ test('事实 A→B→A 可创建新的确认版本，不被旧内容去重挡住
   assert.equal(m.list({ ...priv, status: 'superseded' }).length, 2);
 });
 
+test('记忆标签、时间衰退和显式强化只影响检索，不删除原文', async (t) => {
+  const m = await fixture(t, { embedder: { key: 'constant-test', embed: async () => [1, 0] } });
+  const oldEvent = m.addMemory({ ...priv, kind: 'event', content: '上周吃过火锅', status: 'active',
+    importance: 0.2, confidence: 0.8, temperature: 'cold', decayHalfLife: 1 });
+  const stable = m.addMemory({ ...priv, kind: 'preference', content: '喜欢无糖咖啡', status: 'active',
+    importance: 0.9, confidence: 0.9, temperature: 'warm', decayHalfLife: 365 });
+  m.db.prepare('UPDATE memories SET last_reinforced=? WHERE id=?').run(Date.now() - 30 * 86400000, oldEvent);
+  const hits = await m.search('咖啡', priv);
+  assert.equal(hits[0].id, stable);
+  assert.equal(m.db.prepare('SELECT count(*) AS n FROM memories').get().n, 2);
+  assert.equal(m.db.prepare('SELECT temperature FROM memories WHERE id=?').get(oldEvent).temperature, 'cold');
+  m.reinforce(oldEvent, { temperature: 'warm', importance: 0.8 });
+  const reinforced = m.db.prepare('SELECT * FROM memories WHERE id=?').get(oldEvent);
+  assert.equal(reinforced.temperature, 'warm');
+  assert.equal(reinforced.recall_count, 1);
+  assert.equal(m.list({ ...priv, status: 'active' }).length, 2);
+});
+
+test('计划过期后显示 expired 标签，仍保留记录和来源', async (t) => {
+  const m = await fixture(t);
+  const id = m.addMemory({ ...priv, kind: 'plan', content: '下周去看电影', status: 'active',
+    expiresAt: Date.now() - 1000, temperature: 'warm' });
+  const rows = await m.search('看电影', priv);
+  assert.equal(rows[0].id, id);
+  assert.equal(rows[0].temperature, 'expired');
+  assert.equal(m.db.prepare('SELECT status,temperature FROM memories WHERE id=?').get(id).status, 'active');
+});
+
 test('整理失败不会推进摘要水位；恢复后继续，不重复覆盖或删除原文', async (t) => {
   const m = await fixture(t, { organizer: { organize: async () => { throw new Error('offline'); } }, options: { recentTurns: 1 } });
   add(m, '我喜欢咖啡'); add(m, '新消息');

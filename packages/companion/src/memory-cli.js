@@ -8,7 +8,7 @@ const at = args.indexOf('--config');
 const configFile = at >= 0 ? args.splice(at, 2)[1] : undefined;
 const cfg = loadConfig(configFile);
 const [command, ...rest] = args;
-const offline = ['list', 'approve', 'reject', 'forget', 'stats', 'source'].includes(command);
+const offline = ['list', 'approve', 'reject', 'forget', 'reinforce', 'stats', 'source'].includes(command);
 const memory = await createMemoryV2({
   dir: cfg.dataDir, config: cfg.memory,
   ...(offline ? { organizer: null, embedder: null } : {}),
@@ -23,6 +23,9 @@ try {
     case 'approve': result = memory.approve(Number(rest[0])); break;
     case 'reject': result = memory.reject(Number(rest[0])); break;
     case 'forget': result = memory.forget(Number(rest[0])); break;
+    case 'reinforce': result = memory.reinforce(Number(rest[0]), {
+      importance: rest[1] === undefined ? undefined : Number(rest[1]), temperature: rest[2],
+    }); break;
     case 'search': result = await memory.search(rest.slice(2).join(' '), { scope, userId }); break;
     case 'context': result = await memory.context({ key: scope, userId, text: rest.slice(2).join(' ') }); break;
     case 'flush': await memory.flush({ force: true }); result = memory.stats(); break;
@@ -31,6 +34,7 @@ try {
       'stats | flush',
       'list <private:QQ号|group:群号> <当前QQ号> [candidate|active|superseded]',
       'approve <记忆ID> | reject <记忆ID> | forget <记忆ID>',
+      'reinforce <记忆ID> [重要度0-1] [hot|warm|cold]',
       'search <scope> <当前QQ号> <问题> | context <scope> <当前QQ号> <问题>',
       'source <scope> <当前QQ号> <消息ID> ...',
       '数据库：' + path.join(cfg.dataDir, 'memory.db'),
